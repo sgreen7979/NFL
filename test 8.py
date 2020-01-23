@@ -146,8 +146,8 @@ allPlays = allPlays.sort_values(by=['gameID', 'gameDate', 'quarter', 'minute', '
                                 ascending=[True, True, True, False, False, True])
 
 # Add column with binary indication of whether play was in red zone
-allPlays['isGoalLineDown'] = allPlays.yardLine >= 90
-allPlays.isGoalLineDown = allPlays.isGoalLineDown.astype(int)
+allPlays['isGoalToGo'] = allPlays.yardLine >= 90
+allPlays.isGoalToGo = allPlays.isGoalToGo.astype(int)
 
 # Add column with binary indication of whether play was in red zone
 allPlays['isRedZone'] = allPlays.yardLine > 80
@@ -342,7 +342,7 @@ epPlaySet = epPlaySet[['gameID',
                        'turnoversWinner',
                        'ydLoser',
                        'turnoversLoser',
-                       'isGoalLineDown',
+                       'isGoalToGo',
                        'isRedZone',
                        'isUTM']]
 
@@ -391,18 +391,15 @@ plt.xlabel('Yard Line (0-100)')
 plt.ylabel('Expected Points')
 plt.title('Fourth Down')
 
-# Lowess
-lowess = sm.nonparametric.lowess(ep1downFrame.yardLine, ep1downFrame.EP, frac=0.3)
+# Implement locally weighted regression (lowess) on ep1downFrame to smooth data
+lowess = sm.nonparametric.lowess(ep1downFrame.yardLine, ep1downFrame.EP, frac=1)
 lowess_x = list(zip(*lowess))[0]
 lowess_y = list(zip(*lowess))[1]
 lowess1down = pd.DataFrame({'yardLine': lowess_y, 'EP': lowess_x})
-
-# run scipy's interpolation
-f = interp1d(lowess_x, lowess_y, bounds_error=False)
-print(f)
+lowess1downInterp = interp1d(lowess1down.yardLine, lowess1down.EP, 'linear')
 
 # Produce lowess scatter plot for EP by down by yardLine on 1st down
-lowess1down.plot(kind='scatter', x='yardLine', y='EP')
+lowess1down.plot(kind='line', x='yardLine', y='EP')
 plt.xlabel('Yard Line (0-100)')
 plt.ylabel('Expected Points')
 plt.title('First Down')
