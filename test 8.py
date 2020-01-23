@@ -1,8 +1,9 @@
 # import pandas as pd, urllib, numpy as np, and matplotlib.pyplot
 import pandas as pd
-import urllib
 import numpy as np
 import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from scipy.interpolate import interp1d
 
 # Read .csv of play by play data into data frame (pbp)
 pbp = pd.read_csv('/Users/samgreen/Desktop/Python/pbp-2019.csv', index_col='playID')
@@ -76,15 +77,27 @@ passingPlays['targetPlayerName'] = (1 - passingPlays.targetPlayerIsNull) * passi
                                    passingPlays.targetPlayerIsNull * passingPlays.targetPlayerName2
 passingPlays = passingPlays.drop(['targetPlayerIsNull', 'targetPlayerName1', 'targetPlayerName2'], axis=1)
 
-
 # Merge passingPlays and rushingPlays
 allPlays = pd.concat([rushingPlays, passingPlays, otherPlays], ignore_index=False, sort=False)
 
 # Drop 'challenger' (empty column) of allPlays
 allPlays = allPlays.drop('challenger', axis=1)
 
-# Create an isComplete column
+# Create binary column for whether a pass attempt was completed (isComplete)
 allPlays['isComplete'] = allPlays.isPass - allPlays.isIncomplete
+
+# Create binary column for whether a timeout was called on the play
+timeout = allPlays.description.str.contains('TIMEOUT')
+allPlays['isTimeout'] = timeout.astype(int)
+
+# Create binary column for whether a play is a two minute warning
+twoMinWarning = allPlays.description.str.contains('TWO-MINUTE WARNING')
+allPlays['isTwoMinWarning'] = twoMinWarning.astype(int)
+
+# Create binary column for whether a play is the end of a quarter
+qtrEnds = allPlays.description.str.contains('END QUARTER')
+qtrEnds1 = allPlays.description.str.contains('END OF QUARTER')
+allPlays['isQtrEnd'] = qtrEnds.astype(int) + qtrEnds1.astype(int)
 
 # Create binary column for isTouchdown (rows with TOUCHDOWN included in description)
 touchdowns = allPlays.description.str.contains('TOUCHDOWN')
@@ -106,12 +119,20 @@ allPlays['isFieldGoalSuccessful'] = isFieldGoalSuccessful.astype(int)
 isSafety = allPlays.description.str.contains(', SAFETY')
 allPlays['isSafety'] = isSafety.astype(int)
 
-# Calculate and insert column into merged data frame (allPlays) for qtrSecRem, halfSecRem and gamSecRem
+# Calculate and insert column into allPlays for qtrSecRem, halfSecRem and
 allPlays['qtrSecRem'] = allPlays.minute * 60 + allPlays.second
+
+# Calculate and insert column into allPlays for gamSecRem
 allPlays['gmSecRem'] = (4 - allPlays.quarter) * 900 + allPlays.qtrSecRem
+
+# Create dictionary by quarter that maps max seconds remaining in half to a new column (halfSecRemBeg)
 timeMapQtr = {1: 1800, 2: 900, 3: 1800, 4: 900}
 allPlays['halfSecRemBeg'] = allPlays.quarter.map(timeMapQtr)
+
+# Calculate and insert column into allPlays for halfSecRem
 allPlays['halfSecRem'] = allPlays.halfSecRemBeg - 900 + allPlays.qtrSecRem
+
+# Drop halfSecRemBeg column -- no longer of use
 allPlays = allPlays.drop('halfSecRemBeg', axis=1)
 
 # Read .csv of 2019 schedule (sched) indexed by gameID into data frame (sched)
@@ -168,47 +189,75 @@ allPlays['absScoreDiff'] = np.sqrt(allPlays.offScoreDiff ** 2).astype(int)
 # Find index and associate scorePlay value of each non-zero instance in scorePlay
 allPlays.scorePlay = allPlays.scorePlay.replace({0: np.nan})
 
-# Establish binary column for whether a play is a scoring play
+# Establish binary column for whether a play is a scoring play and replace 0 with NaN
 allPlays['isScore'] = allPlays.isTouchdown * 1 + \
                       allPlays.isExtraPointSuccessful * 1 + \
                       allPlays.isTwoPointConversionSuccessful * 1 + \
                       allPlays.isSafety * 1 + \
                       allPlays.isFieldGoalSuccessful * 1
+
+# Establish new column in allPlays indicating the scoring team (scoreTeam) for each scoring play (isScore)
 allPlays['scoreTeam'] = allPlays.isScore * allPlays.offTeam
-
-# Get unique team names
-uniqueTeams = allPlays.offTeam.unique()
-uniqueTeams = list(enumerate(uniqueTeams))
-uniqueTeams = pd.DataFrame(uniqueTeams, columns=['id', 'offTeam'])
-
-#for p in allPlays.index:
-    #allPlays['scoreTeamCode'] = uniqueTeams[allPlays.scoreTeam.
-    #allPlays['offTeamCode'] = uniqueTeams.loc(allPlays.offTeam)
-
-allPlays.isScore = allPlays.isScore.replace({0: np.nan})
 allPlays.scoreTeam = allPlays.scoreTeam.replace({0: np.nan})
-#games = allPlays.gameID.unique()
+
+# Create dictionary to codify teams numerically
+teamCodeMap = {'ARI': 1, 'ATL': 2, 'BAL': 3, 'BUF': 4, 'CAR': 5, 'CHI': 6, 'CIN': 7, 'CLE': 8, 'DAL': 9, 'DEN': 10,
+               'DET': 11, 'GB': 12, 'HOU': 13, 'IND': 14, 'JAX': 15, 'KC': 16, 'LA': 17, 'LAC': 18, 'MIA': 19,
+               'MIN': 20, 'NE': 21, 'NO': 22, 'NYG': 23, 'NYJ': 24, 'OAK': 25, 'PHI': 26, 'PIT': 27, 'SEA': 28,
+               'SF': 29, 'TB': 30, 'TEN': 31, 'WAS': 32}
+
+# Map scoreTeam, offTeam and defTeam by code using teamCodeMap
+allPlays['scoreTeamCode'] = allPlays.scoreTeam.map(teamCodeMap)
+allPlays['offTeamCode'] = allPlays.offTeam.map(teamCodeMap)
+allPlays['defTeamCode'] = allPlays.defTeam.map(teamCodeMap)
+
+# Back fill nextScore and nextScoreTeamCode w/ non-null values by gameID from scorePlay and scoreTeamCode, respectively
 for g in allPlays.gameID:
     allPlays.nextScore = allPlays.scorePlay.bfill()
-    #allPlays.scoreTeamCode.fillna(method='bfill')
+    allPlays['nextScoreTeamCode'] = allPlays.scoreTeamCode.bfill()
+
+# Establish binary column for whether offTeamCode == nextScoreTeamCode
+nextScoreOffTeam = allPlays.offTeamCode == allPlays.nextScoreTeamCode
+allPlays['isNextScoreOffTeam'] = nextScoreOffTeam
+allPlays.isNextScoreOffTeam = allPlays.isNextScoreOffTeam.astype(int)
+
+# Establish binary column for whether defTeamCode == nextScoreTeamCode based on allPlays.isNextScoreOffTeam
+allPlays['isNextScoreDefTeam'] = (1 - allPlays.isNextScoreOffTeam) * -1
+
+# Apply sum of isNextScoreOffTeam and isNextScoreDefTeam to nextScore such that
+# nextScore is negative in rows where offTeam != nextScoreTeam
+# nextScore is positive in rows where offTeam == nextScoreTeam
+allPlays.nextScore = (allPlays.isNextScoreDefTeam + allPlays.isNextScoreOffTeam) * allPlays.nextScore
 
 # Export data frames to a csv files
 rushing_export_csv = rushingPlays.to_csv('rushing_export_dataframe.csv', index=True, header=True, index_label='playID')
 passing_export_csv = passingPlays.to_csv('passing_export_dataframe.csv', index=True, header=True, index_label='playID')
 all_export_csv = allPlays.to_csv('all_export_dataframe.csv', index=True, header=True, index_label='playID')
 
-# Create new data frame (epPlaySet) equal to allPlays where quarter != 2 or 4
+# Create new data frame (epPlaySet) equal to allPlays where quarter != 2, 4 or 5
 epPlaySet = allPlays[allPlays.quarter != 2]
 epPlaySet = epPlaySet[epPlaySet.quarter != 4]
+epPlaySet = epPlaySet[epPlaySet.quarter != 5]
 
 # Drop all rows from epPlaySet with playType of KICK OFF
 epPlaySet = epPlaySet.drop(epPlaySet[epPlaySet.playType == 'KICK OFF'].index)
 
+# Drop all rows from epPlaySet with isTwoMinWarning == 1
+epPlaySet = epPlaySet.drop(epPlaySet[epPlaySet.isTwoMinWarning == 1].index)
+
 # Drop all rows from epPlaySet with absScoreDiff > 10
 epPlaySet = epPlaySet.drop(epPlaySet[epPlaySet.absScoreDiff > 10].index)
 
-# Drop all rows from epPlaySet with playType of KICK OFF
+# Drop all rows from epPlaySet with offTeam of KICK OFF
 epPlaySet = epPlaySet.drop(epPlaySet[epPlaySet.isNoPlay == 1].index)
+
+# Establish binary column for whether offTeam is null
+isOffTeamNull = epPlaySet.offTeam.isnull()
+epPlaySet['offTeamIsNull'] = isOffTeamNull
+epPlaySet.offTeamIsNull = epPlaySet.offTeamIsNull.astype(int)
+
+# Drop all rows where offTeam is null
+epPlaySet = epPlaySet.drop(epPlaySet[epPlaySet.offTeamIsNull == 1].index)
 
 # Reorder columns in epPlaySet
 epPlaySet = epPlaySet[['gameID',
@@ -218,15 +267,18 @@ epPlaySet = epPlaySet[['gameID',
                        'second',
                        'offTeam',
                        'offTeamCode',
+                       'offTeamIsNull',
                        'defTeam',
+                       'defTeamCode',
                        'down',
                        'toGo',
                        'yardLine',
                        'seriesFirstDown',
                        'scorePlay',
                        'scoreTeam',
-                       #'scoreTeamCode',
+                       'scoreTeamCode',
                        'nextScore',
+                       'nextScoreTeamCode',
                        'isScore',
                        'homeTeamPoss',
                        'awayTeamPoss',
@@ -294,12 +346,6 @@ epPlaySet = epPlaySet[['gameID',
                        'isRedZone',
                        'isUTM']]
 
-# Print epPlaySet
-print '\n'
-print 'EP Play Set'
-print epPlaySet
-print epPlaySet.info()
-
 # Export data frames to a csv files
 ep_export_csv = epPlaySet.to_csv('ep_export_dataframe.csv', index=True, header=True, index_label='playID')
 
@@ -311,34 +357,64 @@ epPlaySet4down = epPlaySet[epPlaySet.down == 4]
 
 # Group each play set by yardLine and calculate average next score
 ep1down = epPlaySet1down.groupby(['yardLine'])['nextScore'].mean()
-df_ep1down = pd.DataFrame(ep1down, columns=['yardLine', 'EP'])
 ep2down = epPlaySet2down.groupby(['yardLine'])['nextScore'].mean()
-df_ep2down = pd.DataFrame(ep2down, columns=['yardLine', 'EP'])
 ep3down = epPlaySet3down.groupby(['yardLine'])['nextScore'].mean()
-df_ep3down = pd.DataFrame(ep3down, columns=['yardLine', 'EP'])
 ep4down = epPlaySet4down.groupby(['yardLine'])['nextScore'].mean()
-df_ep4down = pd.DataFrame(ep4down, columns=['yardLine', 'EP'])
 
-# Produce scatter plots for EP by down by yardLine
-plt.scatter(df_ep1down.yardLine, df_ep1down.EP)
+# Convert each groupby object to a data frame
+ep1downFrame = pd.DataFrame({'yardLine': ep1down.index, 'EP': ep1down.values})
+ep2downFrame = pd.DataFrame({'yardLine': ep2down.index, 'EP': ep2down.values})
+ep3downFrame = pd.DataFrame({'yardLine': ep3down.index, 'EP': ep3down.values})
+ep4downFrame = pd.DataFrame({'yardLine': ep4down.index, 'EP': ep4down.values})
+
+# Produce scatter plot for EP by down by yardLine on 1st down
+ep1downFrame.plot(kind='scatter', x='yardLine', y='EP')
 plt.xlabel('Yard Line (0-100)')
 plt.ylabel('Expected Points')
-plt.show()
-plt.scatter(df_ep2down.yardLine, df_ep2down.EP)
+plt.title('First Down')
+
+# Produce scatter plot for EP by down by yardLine on 2nd down
+ep2downFrame.plot(kind='scatter', x='yardLine', y='EP')
 plt.xlabel('Yard Line (0-100)')
 plt.ylabel('Expected Points')
-plt.show()
-plt.scatter(df_ep3down.yardLine, df_ep3down.EP)
+plt.title('Second Down')
+
+# Produce scatter plot for EP by down by yardLine on 3rd down
+ep3downFrame.plot(kind='scatter', x='yardLine', y='EP')
 plt.xlabel('Yard Line (0-100)')
 plt.ylabel('Expected Points')
+plt.title('Third Down')
+
+# Produce scatter plot for EP by down by yardLine on 4th down
+ep4downFrame.plot(kind='scatter', x='yardLine', y='EP')
+plt.xlabel('Yard Line (0-100)')
+plt.ylabel('Expected Points')
+plt.title('Fourth Down')
+
+# Lowess
+lowess = sm.nonparametric.lowess(ep1downFrame.yardLine, ep1downFrame.EP, frac=0.3)
+lowess_x = list(zip(*lowess))[0]
+lowess_y = list(zip(*lowess))[1]
+lowess1down = pd.DataFrame({'yardLine': lowess_y, 'EP': lowess_x})
+
+# run scipy's interpolation
+f = interp1d(lowess_x, lowess_y, bounds_error=False)
+print(f)
+
+# Produce lowess scatter plot for EP by down by yardLine on 1st down
+lowess1down.plot(kind='scatter', x='yardLine', y='EP')
+plt.xlabel('Yard Line (0-100)')
+plt.ylabel('Expected Points')
+plt.title('First Down')
 plt.show()
+
 
 # -----------------------------------------------------------------
 #  TO DOs:
 #  --------
 #   Add isSnap (or some way to calculate snap counts)
-#   Expected points (EP) per play and winning probability (WP) by play
-#   Targeted player - merge columns
+#   Expected points (EP) per play (LOESS)
+#   Winning probability (WP) by play
 #   Address error message:   SettingWithCopyWarning
 #                               A value is trying to be set on a copy of a slice from a DataFrame.
 #                               Try using .loc[row_indexer,col_indexer] = value instead
