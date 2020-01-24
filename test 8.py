@@ -50,7 +50,7 @@ pbp = pbp[['gameID',
            'penaltyType',
            'penaltyYards']]
 
-# Create a copy of pbp called otherPlays containing all data from pbp for all ex. rush and pass plays
+# Create a copy of pbp called otherPlays containing all rows from pbp of playType != RUSH or PASS
 otherPlays = pbp[pbp.playType != 'RUSH']
 otherPlays = otherPlays[otherPlays.playType != 'PASS']
 
@@ -397,6 +397,7 @@ lowess_x = list(zip(*lowess))[0]
 lowess_y = list(zip(*lowess))[1]
 lowess1down = pd.DataFrame({'yardLine': lowess_y, 'EP': lowess_x})
 lowess1downInterp = interp1d(lowess1down.yardLine, lowess1down.EP, 'linear')
+print(lowess1downInterp)
 
 # Produce lowess scatter plot for EP by down by yardLine on 1st down
 lowess1down.plot(kind='line', x='yardLine', y='EP')
@@ -410,12 +411,11 @@ plt.show()
 #  TO DOs:
 #  --------
 #   Add isSnap (or some way to calculate snap counts)
-#   Expected points (EP) per play (LOESS)
+#   lowess and linear interpolation
 #   Winning probability (WP) by play
 #   Address error message:   SettingWithCopyWarning
 #                               A value is trying to be set on a copy of a slice from a DataFrame.
 #                               Try using .loc[row_indexer,col_indexer] = value instead
-#   Set to 'NO PLAY' where appropriate
 #   Need player database (esp player id)
 #   Split passType into 2 columns: short/deep and left/right
 #   Split rushDirection into 2 columns: left/right and tackle/guard
